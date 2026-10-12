@@ -1,6 +1,7 @@
 # Astray
 
 **Astray: Kinetic Survival** is a physics-based 3D maze crawler. Built on the MDA framework, it transforms standard grid navigation into a high-tension survival experience by punishing high-speed wall collisions (Box2D) and slowly blinding the player over time (Three.js).
+[Click here to play](https://radiant-custard-bf596c.netlify.app/)
 
 ### Launching
 

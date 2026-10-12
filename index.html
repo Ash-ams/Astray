@@ -1,6 +1,10 @@
-<html>
+<!DOCTYPE html>
+<html lang="en">
 
     <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Astray - 3D WebGL Maze</title>
     
         <script src='Box2dWeb.min.js'></script>
         <script src="Three.js"></script>
@@ -27,6 +31,38 @@
                 planeTexture   = THREE.ImageUtils.loadTexture('/concrete.png'),
                 brickTexture   = THREE.ImageUtils.loadTexture('/brick.png'),
                 gameState      = undefined,
+                isGamePaused   = true,
+                maxLevelReached = parseInt(localStorage.getItem('astray_max_level')) || 1,
+                currentLevel   = 1,
+                playerHealth   = 100,
+                gameStartTime  = 0,
+                currentTimerInterval = null,
+                isDead         = false,
+                par3Star       = 15,
+                par2Star       = 30,
+                cameraTrauma   = 0,
+                pauseStartTime = 0;
+
+            var sfxClick = new Audio('audio/click.mp3');
+            var sfxImpact = new Audio('audio/impact.mp3');
+            var sfxShatter = new Audio('audio/shatter.mp3');
+            var sfxWin = new Audio('audio/success.mp3');
+
+            sfxClick.volume = 0.4;
+            sfxImpact.volume = 0.6;
+            sfxShatter.volume = 0.8;
+            sfxWin.volume = 0.6;
+
+            function formatSecs(s) { 
+                return String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0'); 
+            }
+
+            function updateTimer() { 
+                var elapsed = Math.floor((Date.now() - gameStartTime) / 1000);
+                var mins = String(Math.floor(elapsed / 60)).padStart(2, '0');
+                var secs = String(elapsed % 60).padStart(2, '0');
+                $('#timer-display').text(mins + ':' + secs); 
+            }
 
             // Box2D shortcuts
                 b2World        = Box2D.Dynamics.b2World,
@@ -72,6 +108,61 @@
                         }
                     }
                 }
+
+                var world = wWorld;
+                var listener = new Box2D.Dynamics.b2ContactListener;
+                listener.PostSolve = function(contact, impulse) {
+                    if (isDead || isGamePaused) return;
+                    
+                    // Calculate the kinetic energy of the crash based on velocity rather than just impulse
+                    var velocity = wBall.GetLinearVelocity();
+                    var speed = Math.sqrt((velocity.x * velocity.x) + (velocity.y * velocity.y));
+                    var hitForce = impulse.normalImpulses[0];
+                    
+                    // Trigger damage if they hit a wall while moving fast OR if the impulse is high
+                    if (speed > 5.0 || hitForce > 0.5) { 
+                        // The fragility multiplier increases by 25% every level
+                        var fragilityMultiplier = 1.0 + (currentLevel * 0.25); 
+
+                        // Base damage increased from 2 to 3, then scaled by level fragility
+                        var baseDamage = Math.floor(speed * 3) + Math.floor(hitForce * 3);
+                        var totalDamage = Math.floor(baseDamage * fragilityMultiplier);
+
+                        playerHealth -= totalDamage;
+                        
+                        // Dynamic impact sound scaling
+                        sfxImpact.currentTime = 0;
+                        sfxImpact.volume = Math.min(1.0, 0.2 + (totalDamage / 100));
+                        sfxImpact.play().catch(function(e){});
+
+                        // Spike Camera Trauma based on impact (max at 1.0)
+                        cameraTrauma = Math.min(1.0, cameraTrauma + (totalDamage / 50));
+
+                        // Flash the red damage vignette overlay
+                        $('#damage-vignette').css('opacity', '0.6');
+                        setTimeout(function() {
+                            $('#damage-vignette').css('opacity', '0');
+                        }, 150);
+                        
+                        if (playerHealth < 0) playerHealth = 0;
+                        $('#health-bar').css('width', playerHealth + '%');
+                        
+                        if (playerHealth < 50) $('#health-bar').css('background-color', '#d35400');
+                        if (playerHealth < 25) $('#health-bar').css('background-color', '#c0392b');
+                        
+                        if (playerHealth === 0) {
+                            sfxShatter.play().catch(function(e){});
+                            isDead = true; 
+                            isGamePaused = true; 
+                            clearInterval(currentTimerInterval);
+                            setTimeout(function(){ 
+                                $('#gameplay-hud').hide(); 
+                                $('#game-over-modal').fadeIn(200); 
+                            }, 50);
+                        }
+                    }
+                };
+                world.SetContactListener(listener);
             }
             
             
@@ -193,8 +284,32 @@
                         camera.position.set(1, 1, 5);
                         light.position.set(1, 1, 1.3);
                         light.intensity = 0;
-                        var level = Math.floor((mazeDimension-1)/2 - 4);
-                        $('#level').html('Level ' + level);
+                        currentLevel = Math.floor((mazeDimension-1)/2 - 4); // Update global variable
+                        $('#level').html('Level ' + currentLevel);
+
+                        // Tighter Par Time Formulas (Less room for error)
+                        par3Star = currentLevel * 8 + 4;  // e.g., Lvl 1 = 12s, Lvl 2 = 20s
+                        par2Star = currentLevel * 12 + 8; // e.g., Lvl 1 = 20s, Lvl 2 = 32s
+
+                        $('#nav-level').text('LEVEL ' + currentLevel);
+                        $('#par-display').html('<span style="color:#f1c40f;">★★★</span> ' + formatSecs(par3Star) + ' &nbsp;|&nbsp; <span style="color:#f1c40f;">★★</span> ' + formatSecs(par2Star));
+                        $('#intro-level-num').text(currentLevel);
+                        $('#intro-par-3').text(formatSecs(par3Star));
+                        $('#intro-par-2').text(formatSecs(par2Star));
+
+                        $('#gameplay-hud').hide(); 
+                        if (!$('#main-menu').is(':visible') && !$('#level-select').is(':visible')) {
+                            $('#level-intro-modal').fadeIn(200);
+                        }
+                        isGamePaused = true; // Hold the game until they click START
+                        clearInterval(currentTimerInterval);
+
+                        // Save progress logic updated to use currentLevel
+                        if (currentLevel > maxLevelReached) {
+                            maxLevelReached = currentLevel;
+                            localStorage.setItem('astray_max_level', maxLevelReached);
+                            renderLevelGrid();
+                        }
                         gameState = 'fade in';
                         break;
                         
@@ -208,16 +323,89 @@
                         break;
 
                     case 'play':
-                        updatePhysicsWorld();
-                        updateRenderWorld();
-                        renderer.render(scene, camera);
+                        if (!isGamePaused && !isDead) {
+                            if (camera.rotation.y !== 0) {
+                                camera.rotation.y += (0 - camera.rotation.y) * 0.1;
+                                if (Math.abs(camera.rotation.y) < 0.0001) camera.rotation.y = 0;
+                            }
+                            updatePhysicsWorld();
+                            updateRenderWorld();
+                            if (light.intensity > 0.25) { 
+                                light.intensity -= 0.001; // Adjust float for faster/slower decay
+                            }
 
-                        // Check for victory.
-                        var mazeX = Math.floor(ballMesh.position.x + 0.5);
-                        var mazeY = Math.floor(ballMesh.position.y + 0.5);
-                        if (mazeX == mazeDimension && mazeY == mazeDimension - 2) { 
-                            mazeDimension += 2;
-                            gameState = 'fade out';
+                            // Apply visual screen shake if cameraTrauma exists
+                            var shakeOffset = { x: 0, y: 0, z: 0 };
+                            if (cameraTrauma > 0) {
+                                var shakeAmount = Math.pow(cameraTrauma, 2) * 0.18; // Quadratic scaling for aggressive shake
+                                shakeOffset.x = (Math.random() - 0.5) * shakeAmount;
+                                shakeOffset.y = (Math.random() - 0.5) * shakeAmount;
+                                shakeOffset.z = (Math.random() - 0.5) * shakeAmount;
+
+                                camera.position.x += shakeOffset.x;
+                                camera.position.y += shakeOffset.y;
+                                camera.position.z += shakeOffset.z;
+
+                                // Decay the trauma over frames
+                                cameraTrauma -= 0.05;
+                                if (cameraTrauma < 0) cameraTrauma = 0;
+                            }
+
+                            // Render the camera with temporary shaky offsets
+                            renderer.render(scene, camera);
+
+                            // Instantly revert offsets to keep baseline tracking stable
+                            if (shakeOffset.x !== 0 || shakeOffset.y !== 0 || shakeOffset.z !== 0) {
+                                camera.position.x -= shakeOffset.x;
+                                camera.position.y -= shakeOffset.y;
+                                camera.position.z -= shakeOffset.z;
+                            }
+
+                            // Check for victory.
+                            var mazeX = Math.floor(ballMesh.position.x + 0.5);
+                            var mazeY = Math.floor(ballMesh.position.y + 0.5);
+                            if (mazeX == mazeDimension && mazeY == mazeDimension - 2) { 
+                                isGamePaused = true;
+                                sfxWin.play().catch(function(e){});
+                                clearInterval(currentTimerInterval);
+
+                                // Calculate Time and Stars
+                                var elapsedSecs = Math.floor((Date.now() - gameStartTime) / 1000);
+                                $('#final-time-text').text('Time: ' + $('#timer-display').text());
+
+                                var starCount = 1;
+                                var stars = "\u2B50";
+                                if (elapsedSecs <= par3Star) {
+                                    starCount = 3;
+                                    stars = "\u2B50\u2B50\u2B50";
+                                } else if (elapsedSecs <= par2Star) {
+                                    starCount = 2;
+                                    stars = "\u2B50\u2B50";
+                                }
+                                $('#star-rating').text(stars);
+
+                                // Save stars for current level
+                                var currentLevel = Math.floor((mazeDimension-1)/2 - 4);
+                                var levelStars = JSON.parse(localStorage.getItem('astray_level_stars') || '{}');
+                                if (!levelStars[currentLevel] || starCount > levelStars[currentLevel]) {
+                                    levelStars[currentLevel] = starCount;
+                                    localStorage.setItem('astray_level_stars', JSON.stringify(levelStars));
+                                }
+
+                                // Unlock next level
+                                if (currentLevel + 1 > maxLevelReached) {
+                                    maxLevelReached = currentLevel + 1;
+                                    localStorage.setItem('astray_max_level', maxLevelReached);
+                                }
+
+                                renderLevelGrid();
+
+                                $('#gameplay-hud').hide();
+                                $('#level-complete-modal').fadeIn(200);
+                            }
+                        } else {
+                            camera.rotation.y += 0.002;
+                            renderer.render(scene, camera);
                         }
                         break;
                 
@@ -276,14 +464,167 @@
                 return this;
             }            
 
-            
+            function renderLevelGrid() {
+                var levelStars = JSON.parse(localStorage.getItem('astray_level_stars') || '{}');
+                // Backfill level 1 if maxLevelReached >= 2 but no record yet
+                if (maxLevelReached >= 2 && !levelStars[1]) {
+                    levelStars[1] = 2;
+                    localStorage.setItem('astray_level_stars', JSON.stringify(levelStars));
+                }
+
+                $('#level-select .btn-level').each(function() {
+                    var levelNum = parseInt($(this).attr('data-level') || $(this).text().replace(/\D/g, ''));
+                    var starsCount = levelStars[levelNum] || 0;
+                    
+                    if (levelNum > maxLevelReached) {
+                        $(this).addClass('btn-locked').prop('disabled', true);
+                        $(this).html('<span class="level-num">' + levelNum + '</span>');
+                    } else {
+                        $(this).removeClass('btn-locked').prop('disabled', false);
+                        var starHtml = '';
+                        if (starsCount > 0) {
+                            var starStr = '';
+                            for (var s = 0; s < starsCount; s++) {
+                                starStr += '\u2B50';
+                            }
+                            starHtml = '<div class="level-stars">' + starStr + '</div>';
+                        }
+                        $(this).html('<span class="level-num">' + levelNum + '</span>' + starHtml);
+                    }
+                });
+            }
+
+            function setupUI() {
+                $('button').click(function() {
+                    sfxClick.currentTime = 0; // Reset to allow rapid clicking
+                    sfxClick.play().catch(function(e) { console.log("Audio blocked by browser autoplay rules until interaction."); });
+                });
+
+                $('#game-nav button:contains("MENU")').click(function() {
+                    $('.game-overlay').hide();
+                    $('#main-menu').fadeIn(200);
+                    $('#gameplay-hud').fadeOut(200);
+                    clearInterval(currentTimerInterval);
+                    isGamePaused = true;
+                });
+
+                $('#game-nav button:contains("RULES")').click(function() {
+                    if (!isGamePaused) {
+                        pauseStartTime = Date.now();
+                        clearInterval(currentTimerInterval);
+                    }
+                    $('#rules-modal').fadeIn(200);
+                    isGamePaused = true;
+                });
+
+                $('#main-menu button:contains("PLAY")').click(function() {
+                    $('#main-menu').hide();
+                    isGamePaused = true;
+                    gameState = 'initialize';
+                });
+
+                $('#main-menu button:contains("LEVEL SELECT")').click(function() {
+                    $('#main-menu').hide();
+                    $('#level-select').fadeIn(200);
+                });
+
+                $('#level-select button:contains("BACK")').click(function() {
+                    $('#level-select').hide();
+                    $('#main-menu').fadeIn(200);
+                });
+
+                $('#rules-modal button:contains("GOT IT"), #rules-close-btn').click(function() {
+                    $('#rules-modal').fadeOut(200);
+                    
+                    // Only unpause if we are actually in the game (not on the main menu or level select)
+                    if (!$('#main-menu').is(':visible') && !$('#level-select').is(':visible') && !$('#level-intro-modal').is(':visible')) {
+                        // Offset the game start time by exactly how long we were paused
+                        if (pauseStartTime > 0) {
+                            gameStartTime += (Date.now() - pauseStartTime);
+                            pauseStartTime = 0;
+                        }
+                        clearInterval(currentTimerInterval);
+                        currentTimerInterval = setInterval(updateTimer, 1000);
+                        isGamePaused = false;
+                    }
+                });
+
+                // Call it initially
+                renderLevelGrid();
+
+                // Wire the level jump logic for unlocked buttons
+                $('#level-select').off('click', '.btn-level:not(.btn-locked)').on('click', '.btn-level:not(.btn-locked)', function() {
+                    var selectedLevel = parseInt($(this).attr('data-level') || $(this).find('.level-num').text() || $(this).text().replace(/\D/g, ''));
+                    mazeDimension = (selectedLevel + 4) * 2 + 1; // Reverse the generation math
+                    $('#level-select').hide();
+                    isGamePaused = true;
+                    gameState = 'initialize';
+                });
+
+                // Universal Main Menu routing for the new modals
+                $('.btn-to-menu').click(function() {
+                    $('.game-overlay').hide();
+                    $('#main-menu').fadeIn(200);
+                });
+
+                // Retry Level Button
+                $('#btn-restart-level').click(function() {
+                    $('#game-over-modal').hide();
+                    isGamePaused = true;
+                    gameState = 'initialize';
+                });
+
+                // Next Level Button
+                $('#btn-next-level').click(function() {
+                    $('#level-complete-modal').hide();
+                    mazeDimension += 2; // Increase maze size
+                    isGamePaused = true;
+                    gameState = 'fade out'; // Trigger the original next-level transition
+                });
+
+                // Start Run Button in Level Intro Modal
+                $('#btn-start-run').click(function() {
+                    $('#level-intro-modal').fadeOut(200);
+                    $('#gameplay-hud').fadeIn(200);
+                    
+                    // Reset survival stats ONLY when they actually start the run
+                    playerHealth = 100;
+                    cameraTrauma = 0;
+                    $('#damage-vignette').css('opacity', '0');
+                    isDead = false;
+                    light.intensity = 1.5;
+                    $('#health-bar').css({width: '100%', backgroundColor: '#16a085'});
+                    
+                    gameStartTime = Date.now();
+                    clearInterval(currentTimerInterval);
+                    currentTimerInterval = setInterval(updateTimer, 1000);
+                    isGamePaused = false; // Unpause physics and input
+                });
+
+                // Ensure modals are hidden initially
+                $('#game-over-modal, #level-complete-modal, #level-intro-modal').hide();
+            }
+
             $(document).ready(function() {
 
                 // Prepare the instructions.
                 $('#instructions').center();
                 $('#instructions').hide();
-                KeyboardJS.bind.key('i', function(){$('#instructions').show()}, 
-                                         function(){$('#instructions').hide()});
+                
+                $(document).keydown(function(e) {
+                    if (e.keyCode === 27) { // ESC key
+                        if (!isGamePaused && $('#gameplay-hud').is(':visible')) {
+                            // Pause game and timer
+                            pauseStartTime = Date.now();
+                            clearInterval(currentTimerInterval);
+                            $('#rules-modal').fadeIn(200);
+                            isGamePaused = true;
+                        } else if ($('#rules-modal').is(':visible')) {
+                            // Allow ESC to also close the rules menu
+                            $('#rules-modal button:contains("GOT IT")').click();
+                        }
+                    }
+                });
     
                 // Create the renderer.
                 renderer = new THREE.WebGLRenderer();
@@ -295,6 +636,8 @@
                 KeyboardJS.bind.axis('h', 'l', 'j', 'k', onMoveKey);
                 $(window).resize(onResize);
                 
+                // Initialize UI event listeners
+                setupUI();
 
                 // Set the initial game state.
                 gameState = 'initialize';
@@ -308,40 +651,390 @@
 
         </script>
     
+        <link rel="preconnect" href="https://fonts.googleapis.com">
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@600;700;800;900&display=swap" rel="stylesheet">
+
         <style>
-        
-            body {
-                background: black;
+
+            /* ===== RESET & BASE ===== */
+            *, *::before, *::after {
+                box-sizing: border-box;
                 margin: 0;
                 padding: 0;
-                font-family: 'Helvetica';
             }
-            
+
+            body {
+                background: #0d0d0d;
+                margin: 0;
+                padding: 0;
+                font-family: 'Inter', 'Arial Black', 'Roboto', sans-serif;
+                color: #e0e0e0;
+                overflow: hidden;
+            }
+
+            /* ===== NAVIGATION BAR ===== */
+            #game-nav {
+                position: fixed;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 48px;
+                background: #1a1a1a;
+                border-bottom: 3px solid #333333;
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                padding: 0 16px;
+                z-index: 1000;
+                user-select: none;
+            }
+
+            #game-nav .nav-left,
+            #game-nav .nav-right {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+            }
+
+            #game-nav .nav-center {
+                position: absolute;
+                left: 50%;
+                transform: translateX(-50%);
+                font-size: 14px;
+                font-weight: 800;
+                letter-spacing: 2px;
+                text-transform: uppercase;
+                color: #d4a017;
+            }
+
+            /* ===== FLAT BUTTON SYSTEM ===== */
+            .btn-flat {
+                display: inline-block;
+                padding: 8px 18px;
+                font-family: 'Inter', 'Arial Black', sans-serif;
+                font-size: 13px;
+                font-weight: 800;
+                letter-spacing: 1.5px;
+                text-transform: uppercase;
+                text-decoration: none;
+                text-align: center;
+                color: #e0e0e0;
+                background: #2a2a2a;
+                border: 2px solid #444444;
+                border-bottom: 4px solid #1a1a1a;
+                cursor: pointer;
+                transition: transform 0.05s ease, border-bottom-width 0.05s ease, margin-top 0.05s ease;
+                user-select: none;
+                outline: none;
+            }
+
+            .btn-flat:hover {
+                background: #333333;
+                color: #ffffff;
+            }
+
+            .btn-flat:active {
+                border-bottom-width: 2px;
+                margin-top: 2px;
+            }
+
+            .btn-flat.btn-nav {
+                padding: 6px 14px;
+                font-size: 12px;
+                border-bottom-width: 3px;
+            }
+
+            .btn-flat.btn-nav:active {
+                border-bottom-width: 1px;
+                margin-top: 2px;
+            }
+
+            .btn-flat.btn-primary {
+                background: #c28b00;
+                color: #1a1a1a;
+                border-color: #a87600;
+                border-bottom-color: #7a5500;
+            }
+
+            .btn-flat.btn-primary:hover {
+                background: #d4a017;
+                color: #111111;
+            }
+
+            .btn-flat.btn-secondary {
+                background: #3a6b8c;
+                color: #e0e0e0;
+                border-color: #4a7b9c;
+                border-bottom-color: #264a63;
+            }
+
+            .btn-flat.btn-secondary:hover {
+                background: #4a7b9c;
+                color: #ffffff;
+            }
+
+            /* ===== OVERLAY BASE ===== */
+            .game-overlay {
+                display: none;
+                position: fixed;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 100%;
+                background-color: rgba(10, 10, 10, 0.75);
+                z-index: 900;
+                overflow-y: auto;
+            }
+
+            .overlay-content {
+                max-width: 520px;
+                margin: 0 auto;
+                padding: 80px 24px 48px;
+                text-align: center;
+            }
+
+            /* ===== MAIN MENU ===== */
+            #main-menu {
+                background-color: rgba(10, 10, 10, 0.75);
+            }
+
+            /* -- Mascot Ball -- */
+            @keyframes roll {
+                from { transform: rotate(0deg); }
+                to { transform: rotate(360deg); }
+            }
+
+            #menu-mascot {
+                width: 120px;
+                height: 120px;
+                border-radius: 50%;
+                background-image: url('ball.png');
+                background-size: cover;
+                background-position: center;
+                box-shadow: inset -15px -15px 20px rgba(0,0,0,0.7), 5px 10px 15px rgba(0,0,0,0.5);
+                animation: roll 10s linear infinite;
+                margin: 0 auto 24px;
+            }
+
+            /* -- Brick-Clipped Title -- */
+            #main-menu .menu-title {
+                font-family: 'Arial Black', 'Inter', Impact, sans-serif;
+                font-size: 56px;
+                font-weight: 900;
+                letter-spacing: 8px;
+                text-transform: uppercase;
+                background: url('brick.png');
+                background-size: cover;
+                background-position: center;
+                -webkit-background-clip: text;
+                background-clip: text;
+                -webkit-text-fill-color: transparent;
+                filter: drop-shadow(4px 4px 6px rgba(0,0,0,0.8));
+                margin-bottom: 8px;
+            }
+
+            #main-menu .menu-subtitle {
+                font-size: 13px;
+                font-weight: 600;
+                letter-spacing: 3px;
+                text-transform: uppercase;
+                color: #777777;
+                margin-bottom: 48px;
+            }
+
+            #main-menu .menu-actions {
+                display: flex;
+                flex-direction: column;
+                gap: 12px;
+                align-items: center;
+            }
+
+            #main-menu .menu-actions .btn-flat {
+                width: 260px;
+                padding: 14px 24px;
+                font-size: 15px;
+            }
+
+            /* ===== LEVEL SELECT ===== */
+            #level-select {
+                background-color: rgba(10, 10, 10, 0.75);
+            }
+
+            #level-select .overlay-header {
+                font-size: 24px;
+                font-weight: 900;
+                letter-spacing: 4px;
+                text-transform: uppercase;
+                color: #e0e0e0;
+                margin-bottom: 32px;
+            }
+
+            .level-grid {
+                display: grid;
+                grid-template-columns: repeat(5, 1fr);
+                gap: 10px;
+                margin-bottom: 32px;
+            }
+
+            .level-grid .btn-level {
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                width: 100%;
+                aspect-ratio: 1;
+                font-family: 'Inter', 'Arial Black', sans-serif;
+                font-size: 16px;
+                font-weight: 800;
+                color: #e0e0e0;
+                background: #222222;
+                border: 2px solid #444444;
+                border-bottom: 4px solid #1a1a1a;
+                cursor: pointer;
+                transition: transform 0.05s ease, border-bottom-width 0.05s ease, margin-top 0.05s ease;
+                user-select: none;
+                outline: none;
+                padding: 4px;
+                box-sizing: border-box;
+            }
+
+            .level-grid .btn-level .level-num {
+                line-height: 1.1;
+                font-size: 16px;
+            }
+
+            .level-grid .btn-level .level-stars {
+                font-size: 10px;
+                line-height: 1;
+                margin-top: 3px;
+                letter-spacing: 1px;
+            }
+
+            .level-grid .btn-level:hover {
+                background: #333333;
+                color: #ffffff;
+            }
+
+            .level-grid .btn-level:active {
+                border-bottom-width: 2px;
+                margin-top: 2px;
+            }
+
+            .level-grid .btn-level.btn-locked {
+                background: #1a1a1a;
+                color: #444444;
+                border-color: #2a2a2a;
+                border-bottom-color: #111111;
+                cursor: default;
+            }
+
+            .level-grid .btn-level.btn-locked:hover {
+                background: #1a1a1a;
+                color: #444444;
+            }
+
+            /* ===== RULES MODAL ===== */
+            #rules-modal {
+                background-color: rgba(10, 10, 10, 0.75);
+            }
+
+            #rules-modal .overlay-content {
+                max-width: 480px;
+            }
+
+            #rules-modal .overlay-header {
+                font-size: 24px;
+                font-weight: 900;
+                letter-spacing: 4px;
+                text-transform: uppercase;
+                color: #e0e0e0;
+                margin-bottom: 28px;
+            }
+
+            .rules-block {
+                background: #1a1a1a;
+                border: 2px solid #333333;
+                padding: 20px 24px;
+                margin-bottom: 24px;
+                text-align: left;
+            }
+
+            .rules-block h3 {
+                font-size: 13px;
+                font-weight: 800;
+                letter-spacing: 2px;
+                text-transform: uppercase;
+                color: #d4a017;
+                margin-bottom: 12px;
+            }
+
+            .rules-block p {
+                font-size: 14px;
+                font-weight: 600;
+                color: #aaaaaa;
+                line-height: 1.7;
+                margin-bottom: 8px;
+            }
+
+            .rules-block p:last-child {
+                margin-bottom: 0;
+            }
+
+            .key-tag {
+                display: inline-block;
+                padding: 2px 8px;
+                background: #2a2a2a;
+                border: 1px solid #555555;
+                border-bottom: 3px solid #333333;
+                font-family: 'Inter', monospace;
+                font-size: 12px;
+                font-weight: 800;
+                color: #e0e0e0;
+                margin: 0 2px;
+            }
+
+            /* ===== DIVIDER ===== */
+            .divider {
+                width: 60px;
+                height: 3px;
+                background: #333333;
+                margin: 0 auto 32px;
+            }
+
+            /* ===== LEGACY HUD (preserved) ===== */
             #instructions {
-                background-color: rgba(0,0,0,0.75);
-                color: white;
+                background-color: #1a1a1a;
+                color: #e0e0e0;
                 text-align: center;
                 padding: 32px;
                 margin: 0px;
                 display: inline;
-                border: 2px solid white;
+                border: 2px solid #333333;
+                font-weight: 700;
+                z-index: 800;
             }
 
             #help {
                 position: absolute;
                 left: 0px;
                 bottom: 0px;
-                padding: 4px;
-                color: white;   
+                padding: 8px 12px;
+                color: #888888;
+                font-size: 12px;
+                font-weight: 700;
+                letter-spacing: 1px;
+                text-transform: uppercase;
+                z-index: 800;
             }
 
             #level {
-                position: absolute;
-                left: 0px;
-                top: 0px;
-                padding: 4px;
-                color: yellow;   
-                font-weight: bold;
+                display: none;
+            }
+
+            #gameplay-hud {
+                top: 60px !important;
+                z-index: 1001 !important;
             }
 
         </style>
@@ -349,7 +1042,139 @@
     </head>
     
     <body>
-    
+
+    <!-- Damage Vignette Overlay -->
+    <div id="damage-vignette" style="position:fixed; top:0; left:0; width:100%; height:100%; pointer-events:none; box-shadow:inset 0 0 100px rgba(192, 41, 43, 0.85); z-index:99; opacity:0; transition:opacity 0.1s ease-out;"></div>
+
+    <!-- ===== GAMEPLAY HUD ===== -->
+    <div id="gameplay-hud" style="position:fixed; top:20px; right:20px; z-index:100; display:none; text-align:right;">
+      <div id="timer-display" style="color:white; font-family:'Inter', sans-serif; font-size:24px; font-weight:900; margin-bottom:8px; text-shadow: 2px 2px 4px rgba(0,0,0,0.8);">00:00</div>
+      <div id="par-display" style="color:#aaa; font-family:'Inter', sans-serif; font-size:12px; margin-bottom:8px; font-weight:600; letter-spacing:1px;">★★★ 00:15 &nbsp;|&nbsp; ★★ 00:30</div>
+      <div style="width:200px; height:18px; background-color:#2a2a2a; border:2px solid #111; border-radius:4px; overflow:hidden; box-shadow: 2px 2px 4px rgba(0,0,0,0.8);">
+        <div id="health-bar" style="width:100%; height:100%; background-color:#16a085; transition:width 0.15s ease, background-color 0.15s ease;"></div>
+      </div>
+    </div>
+
+    <!-- ===== NAVIGATION BAR ===== -->
+    <nav id="game-nav">
+        <div class="nav-left">
+            <button class="btn-flat btn-nav" id="nav-menu-btn">MENU</button>
+            <button class="btn-flat btn-nav" id="nav-rules-btn">RULES</button>
+        </div>
+        <div class="nav-center" id="nav-level-indicator"><span id="nav-level">LEVEL 1</span></div>
+        <div class="nav-right"></div>
+    </nav>
+
+    <!-- ===== MAIN MENU OVERLAY ===== -->
+    <div id="main-menu" class="game-overlay" style="display: block;">
+        <div class="overlay-content">
+            <div id="menu-mascot"></div>
+            <h1 class="menu-title">ASTRAY</h1>
+            <div class="menu-subtitle">A WEBGL MAZE GAME</div>
+            <div class="divider"></div>
+            <div class="menu-actions">
+                <button class="btn-flat btn-primary" id="menu-play-btn">PLAY</button>
+                <button class="btn-flat btn-secondary" id="menu-levelselect-btn">LEVEL SELECT</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ===== LEVEL SELECT OVERLAY ===== -->
+    <div id="level-select" class="game-overlay">
+        <div class="overlay-content">
+            <div class="overlay-header">SELECT LEVEL</div>
+            <div class="divider"></div>
+            <div class="level-grid" id="level-grid">
+                <button class="btn-level" data-level="1">1</button>
+                <button class="btn-level" data-level="2">2</button>
+                <button class="btn-level" data-level="3">3</button>
+                <button class="btn-level" data-level="4">4</button>
+                <button class="btn-level" data-level="5">5</button>
+                <button class="btn-level" data-level="6">6</button>
+                <button class="btn-level" data-level="7">7</button>
+                <button class="btn-level" data-level="8">8</button>
+                <button class="btn-level" data-level="9">9</button>
+                <button class="btn-level" data-level="10">10</button>
+                <button class="btn-level btn-locked" data-level="11">11</button>
+                <button class="btn-level btn-locked" data-level="12">12</button>
+                <button class="btn-level btn-locked" data-level="13">13</button>
+                <button class="btn-level btn-locked" data-level="14">14</button>
+                <button class="btn-level btn-locked" data-level="15">15</button>
+            </div>
+            <button class="btn-flat btn-secondary" id="levelselect-back-btn">BACK</button>
+        </div>
+    </div>
+
+    <!-- ===== RULES MODAL OVERLAY ===== -->
+    <div id="rules-modal" class="game-overlay">
+        <div class="overlay-content">
+            <h1 style="font-family:'Inter', sans-serif; font-size:42px; color:white; margin-bottom:20px; font-weight:900; letter-spacing:4px; text-align:center;">RULES</h1>
+
+            <div class="rules-block" style="background-color:#1a1a1a; border:1px solid #333; padding:15px; margin-bottom:15px; border-radius:4px; text-align:left;">
+                <h3 style="color:#f1c40f; font-family:'Inter', sans-serif; font-size:14px; margin-bottom:10px; letter-spacing:1px;">MOVEMENT</h3>
+                <p style="color:#ccc; font-family:'Inter', sans-serif; font-size:14px; line-height:1.5;">
+                    Use <strong>W A S D</strong> or the <strong>ARROW KEYS</strong> to roll the ball through the maze.<br>
+                    Vim users: <strong>H J K L</strong> also work.
+                </p>
+            </div>
+
+            <div class="rules-block" style="background-color:#1a1a1a; border:1px solid #333; padding:15px; margin-bottom:15px; border-radius:4px; text-align:left;">
+                <h3 style="color:#f1c40f; font-family:'Inter', sans-serif; font-size:14px; margin-bottom:10px; letter-spacing:1px;">KINETIC SURVIVAL</h3>
+                <p style="color:#ccc; font-family:'Inter', sans-serif; font-size:14px; line-height:1.5;">
+                    Your ball is fragile. Slamming into walls at high speeds will shatter it. As you progress to higher levels, the ball becomes increasingly delicate. <strong>Brake before cornering!</strong>
+                </p>
+            </div>
+
+            <div class="rules-block" style="background-color:#1a1a1a; border:1px solid #333; padding:15px; margin-bottom:15px; border-radius:4px; text-align:left;">
+                <h3 style="color:#f1c40f; font-family:'Inter', sans-serif; font-size:14px; margin-bottom:10px; letter-spacing:1px;">THE FADING EMBER</h3>
+                <p style="color:#ccc; font-family:'Inter', sans-serif; font-size:14px; line-height:1.5;">
+                    You emit the only light in the maze. As time passes, your visibility will slowly decay. Move quickly to avoid being trapped in the dark.
+                </p>
+            </div>
+
+            <div class="rules-block" style="background-color:#1a1a1a; border:1px solid #333; padding:15px; margin-bottom:25px; border-radius:4px; text-align:left;">
+                <h3 style="color:#f1c40f; font-family:'Inter', sans-serif; font-size:14px; margin-bottom:10px; letter-spacing:1px;">TARGETS & PAUSE</h3>
+                <p style="color:#ccc; font-family:'Inter', sans-serif; font-size:14px; line-height:1.5;">
+                    Navigate to the exit before the target times to earn <strong>Stars</strong>. Press <strong>ESC</strong> at any time during gameplay to pause the engine and view this menu.
+                </p>
+            </div>
+
+            <!-- Keep the existing GOT IT button -->
+            <div style="text-align:center;">
+                <button class="btn-flat btn-primary" id="rules-close-btn" style="background-color:#d39e00; color:black; font-weight:bold; padding:10px 30px; border:none; cursor:pointer;">GOT IT</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Level Intro Modal -->
+    <div id="level-intro-modal" class="game-overlay" style="display:flex; align-items:center; justify-content:center; flex-direction:column; background-color:rgba(10,10,10,0.85); z-index:950;">
+        <h1 style="font-family:'Inter', sans-serif; font-size:48px; color:white; margin-bottom:5px; font-weight:900;">LEVEL <span id="intro-level-num"></span></h1>
+        <h2 style="color:#aaa; font-family:'Inter', sans-serif; font-size:16px; margin-bottom:20px; letter-spacing:2px;">TARGET TIMES</h2>
+        <div style="font-family:'Inter', sans-serif; font-size:28px; margin-bottom:30px; font-weight:700;">
+            <span style="color:#f1c40f;">★★★</span> <span id="intro-par-3"></span> &nbsp;&nbsp;&nbsp;|&nbsp;&nbsp;&nbsp; 
+            <span style="color:#f1c40f;">★★</span> <span id="intro-par-2"></span>
+        </div>
+        <button id="btn-start-run" class="btn-flat btn-primary">START</button>
+    </div>
+
+    <!-- Game Over Modal -->
+    <div id="game-over-modal" class="game-overlay" style="display:flex; align-items:center; justify-content:center; flex-direction:column;">
+        <h1 style="font-family:'Inter', sans-serif; font-size:48px; color:#c0392b; margin-bottom:10px; font-weight:900;">BALL SHATTERED</h1>
+        <p style="color:#aaa; font-family:'Inter', sans-serif; margin-bottom:30px;">You hit the wall too hard.</p>
+        <button id="btn-restart-level" class="btn-flat btn-primary">RETRY LEVEL</button>
+        <button class="btn-flat btn-secondary btn-to-menu" style="margin-top:15px;">MAIN MENU</button>
+    </div>
+
+    <!-- Level Complete Modal -->
+    <div id="level-complete-modal" class="game-overlay" style="display:flex; align-items:center; justify-content:center; flex-direction:column;">
+        <h1 style="font-family:'Inter', sans-serif; font-size:48px; color:#16a085; margin-bottom:10px; font-weight:900;">LEVEL CLEARED</h1>
+        <h2 id="final-time-text" style="color:white; font-family:'Inter', sans-serif; font-size:32px; margin-bottom:10px;">Time: 00:00</h2>
+        <div id="star-rating" style="font-size:40px; margin-bottom:30px; letter-spacing:10px;">&#11088;&#11088;&#11088;</div>
+        <button id="btn-next-level" class="btn-flat btn-primary">NEXT LEVEL</button>
+        <button class="btn-flat btn-secondary btn-to-menu" style="margin-top:15px;">MAIN MENU</button>
+    </div>
+
+    <!-- ===== LEGACY HUD ELEMENTS (preserved for game logic) ===== -->
     <div id='instructions'>
         How to play Astray:
         <br><br>
@@ -357,9 +1182,9 @@
         <br><br>
         Vim trainees: h, j, k, l
     </div>
-    
+
     <div id='help'>
-        Hold down the 'I' key for instructions.
+        HOLD I FOR INSTRUCTIONS
     </div>
 
     <div id='level'>

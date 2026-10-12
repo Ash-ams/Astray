@@ -1,6 +1,6 @@
 # Astray
 
-A WebGL maze game built with Three.js and Box2dWeb. Play it here: http://wwwtyro.github.io/Astray/
+**Astray: Kinetic Survival** is a physics-based 3D maze crawler. Built on the MDA framework, it transforms standard grid navigation into a high-tension survival experience by punishing high-speed wall collisions (Box2D) and slowly blinding the player over time (Three.js).
 
 ### Launching
 
